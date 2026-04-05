@@ -141,6 +141,7 @@ class GladosEngine:
 
         # Prevent overlapping TTS playback
         self._speak_lock = threading.Lock()
+        self._playing = False  # True only while sd.play/sd.wait is active
 
         # Prevent overlapping model loads
         self._init_lock = threading.Lock()
@@ -526,20 +527,28 @@ class GladosEngine:
                 volume = self.settings["audio"].get("volume", 1.0)
                 if volume != 1.0:
                     audio = audio * volume
+                self._playing = True
                 sd.play(audio, self.tts.rate)
                 try:
                     sd.wait()
-                except Exception:
-                    log.debug("TTS playback interrupted")
+                except Exception as e:
+                    log.info("TTS sd.wait() interrupted: %s (%s)", e, type(e).__name__)
+                finally:
+                    self._playing = False
             except Exception as e:
+                self._playing = False
                 log.error("TTS error: %s", e)
                 self.on_error(f"TTS error: {e}")
 
     def stop_speaking(self):
+        if not self._playing:
+            return
+        log.info("stop_speaking: calling sd.stop()")
         try:
             sd.stop()
-        except Exception:
-            pass
+            log.info("stop_speaking: sd.stop() OK")
+        except Exception as e:
+            log.error("stop_speaking: sd.stop() raised: %s", e, exc_info=True)
 
     # --------------------------------------------------------------- worker
     def _worker_loop(self):

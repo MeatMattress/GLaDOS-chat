@@ -463,27 +463,32 @@ class GladosApp(tk.Tk):
         self._poll_active = True
 
         def _init_thread():
-            self.engine.initialize()
-            if self._model_switching:
-                return
-            # Greeting
-            greeting = self.settings["general"]["greeting"]
-            self.engine.messages.append({"role": "assistant", "content": greeting})
-            self._cb_message("assistant", greeting)
-            self._cb_status("Speaking")
+            import logging, traceback
+            log = logging.getLogger("glados")
             try:
-                self.engine.speak(greeting)
+                self.engine.initialize()
+                if self._model_switching:
+                    return
+                # Greeting
+                greeting = self.settings["general"]["greeting"]
+                self.engine.messages.append({"role": "assistant", "content": greeting})
+                self._cb_message("assistant", greeting)
+                self._cb_status("Speaking")
+                try:
+                    self.engine.speak(greeting)
+                except Exception:
+                    log.error("Greeting speak error:\n%s", traceback.format_exc())
+                if self._model_switching:
+                    return
+                # Calibrate + start listening
+                self.engine.calibrate()
+                if self._model_switching:
+                    return
+                self._cb_status("Listening")
+                # Start the audio poll loop on the main thread
+                self.after(50, self._poll_audio)
             except Exception:
-                pass
-            if self._model_switching:
-                return
-            # Calibrate + start listening
-            self.engine.calibrate()
-            if self._model_switching:
-                return
-            self._cb_status("Listening")
-            # Start the audio poll loop on the main thread
-            self.after(50, self._poll_audio)
+                log.error("Boot thread crashed:\n%s", traceback.format_exc())
         threading.Thread(target=_init_thread, daemon=True).start()
         # Start meter refresh
         self._refresh_meter()
@@ -838,9 +843,15 @@ class GladosApp(tk.Tk):
 
     def _skip_speech(self):
         """Stop TTS playback and return to listening."""
+        import logging, traceback
+        log = logging.getLogger("glados")
+        log.info("Skip pressed, status=%r", getattr(self, '_current_status', ''))
         if getattr(self, '_current_status', '') != "Speaking":
             return
-        self.engine.stop_speaking()
+        try:
+            self.engine.stop_speaking()
+        except Exception:
+            log.error("skip_speech error:\n%s", traceback.format_exc())
 
     # ---------------------------------------------------------------- rewind
     def _do_rewind(self, bubble):
@@ -1318,6 +1329,13 @@ class SettingsDialog(tk.Toplevel):
         self.parent_app.engine.settings = self.settings
         new_model = self.settings["llm"]["model"]
         self.destroy()
+
+        # Restart the audio stream so VAD/audio changes take effect
+        if new_model == old_model:
+            app = self.parent_app
+            if app.engine.listening:
+                app.engine.stop_listening()
+                app.engine.start_listening()
 
         # If the model changed and the new one is cached, hot-swap it
         if new_model != old_model and _is_model_cached(new_model):
