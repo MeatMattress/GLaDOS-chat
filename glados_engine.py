@@ -79,6 +79,9 @@ DEFAULTS = {
         "input_device": None,
         "volume": 1.0,
     },
+    "tts_replacements": {
+        "weren't": "were not",
+    },
 }
 
 
@@ -506,6 +509,8 @@ class GladosEngine:
             return
         clean = text.replace("...", ",").replace(";", ",")
         clean = clean.replace('"', '').replace('"', '').replace('"', '')
+        for find, replace in self.settings.get("tts_replacements", {}).items():
+            clean = clean.replace(find, replace)
         clean = re.sub(r'\ba\b', 'uh', clean)
         clean = re.sub(r"[^a-zA-Z0-9\s.,!?'\-:;()]", "", clean)
         log.debug("TTS input: %r", clean)

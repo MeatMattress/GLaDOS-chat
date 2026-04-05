@@ -4,7 +4,7 @@
     "greeting": "Oh. It's you. ... It's been a long time. How have you been? I've been really busy being dead. You know, after you MURDERED ME?   "
   },
   "llm": {
-    "model": "google/gemma-4-E2B-it",
+    "model": "google/gemma-4-E4B-it",
     "temperature": 0.8,
     "num_predict": 300,
     "max_history": 20
@@ -26,5 +26,8 @@
     "sample_rate": 16000,
     "input_device": null,
     "volume": 0.55
+  },
+  "tts_replacements": {
+    "weren't": "were not"
   }
 }

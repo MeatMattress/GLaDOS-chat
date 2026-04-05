@@ -49,6 +49,8 @@ SUCCESS      = "#3fb950"
 WARNING      = "#d29922"
 ERROR        = "#f85149"
 BORDER       = "#30363d"
+BUBBLE_USER  = "#1a56db"
+BUBBLE_GLADOS = "#2d333b"
 METER_BG     = "#1a1e24"
 METER_IDLE   = "#2ea043"
 METER_SPEECH = "#ff6600"
@@ -466,12 +468,12 @@ class GladosApp(tk.Tk):
                 return
             # Greeting
             greeting = self.settings["general"]["greeting"]
+            self.engine.messages.append({"role": "assistant", "content": greeting})
             self._cb_message("assistant", greeting)
             self._cb_status("Speaking")
             self.engine.speak(greeting)
             if self._model_switching:
                 return
-            self.engine.messages.append({"role": "assistant", "content": greeting})
             # Calibrate + start listening
             self.engine.calibrate()
             if self._model_switching:
@@ -503,19 +505,33 @@ class GladosApp(tk.Tk):
                                       **self._btn_style())
         self.btn_settings.pack(side=tk.LEFT)
 
-        # ---- chat area ----
-        self.chat = scrolledtext.ScrolledText(
-            self, wrap=tk.WORD, state=tk.DISABLED,
-            bg=BG2, fg=TEXT, insertbackground=TEXT,
-            font=("Consolas", 11), relief=tk.FLAT,
-            borderwidth=0, padx=10, pady=10,
-            selectbackground=ACCENT, selectforeground=BG,
-        )
-        self.chat.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
-        self.chat.tag_configure("glados",  foreground=GLADOS_CLR, font=("Consolas", 11, "bold"))
-        self.chat.tag_configure("user",    foreground=USER_CLR)
-        self.chat.tag_configure("system",  foreground=TEXT_DIM, font=("Consolas", 10, "italic"))
-        self.chat.tag_configure("error",   foreground=ERROR)
+        # ---- chat area (scrollable bubble list) ----
+        chat_outer = tk.Frame(self, bg=BG2, relief=tk.FLAT)
+        chat_outer.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+
+        self._chat_canvas = tk.Canvas(chat_outer, bg=BG2, highlightthickness=0)
+        chat_sb = ttk.Scrollbar(chat_outer, orient=tk.VERTICAL,
+                                command=self._chat_canvas.yview)
+        self._chat_frame = tk.Frame(self._chat_canvas, bg=BG2)
+        self._chat_frame_id = self._chat_canvas.create_window(
+            (0, 0), window=self._chat_frame, anchor=tk.NW)
+        self._chat_frame.bind(
+            "<Configure>",
+            lambda e: self._chat_canvas.configure(
+                scrollregion=self._chat_canvas.bbox("all")))
+        self._chat_canvas.configure(yscrollcommand=chat_sb.set)
+        self._chat_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        chat_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Keep inner frame as wide as canvas
+        self._chat_canvas.bind("<Configure>", self._on_chat_resize)
+        # Mousewheel scrolling
+        self._chat_canvas.bind("<MouseWheel>", self._on_chat_mousewheel)
+        self._chat_frame.bind("<MouseWheel>", self._on_chat_mousewheel)
+
+        # Bubble tracking
+        self._chat_bubbles: list[tuple] = []  # (row_frame, role, msg_ref | None)
+        self._rewind_map: dict[int, tuple] = {}  # id(bubble) -> (msg_ref, row)
 
         # ---- volume meter ----
         meter_frame = tk.Frame(self, bg=BG)
@@ -592,21 +608,96 @@ class GladosApp(tk.Tk):
                         arrowcolor=TEXT_DIM, borderwidth=0)
 
     # ---------------------------------------------------------------- chat helpers
-    def _append_chat(self, tag: str, prefix: str, text: str):
+    def _on_chat_resize(self, event):
+        self._chat_canvas.itemconfig(self._chat_frame_id, width=event.width)
+
+    def _on_chat_mousewheel(self, event):
+        self._chat_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _bind_scroll(self, widget):
+        """Recursively bind mousewheel so scrolling works over bubbles."""
+        widget.bind("<MouseWheel>", self._on_chat_mousewheel)
+        for child in widget.winfo_children():
+            self._bind_scroll(child)
+
+    def _scroll_to_bottom(self):
+        self._chat_canvas.update_idletasks()
+        self._chat_canvas.yview_moveto(1.0)
+
+    def _append_chat(self, tag: str, prefix: str, text: str,
+                     msg_ref: dict | None = None):
         def _do():
-            self.chat.configure(state=tk.NORMAL)
-            self.chat.insert(tk.END, f"{prefix}: ", tag)
-            self.chat.insert(tk.END, f"{text}\n\n")
-            self.chat.configure(state=tk.DISABLED)
-            self.chat.see(tk.END)
+            is_user = (tag == "user")
+            bubble_bg = BUBBLE_USER if is_user else BUBBLE_GLADOS
+            text_fg = "#ffffff"
+            name_fg = USER_CLR if is_user else GLADOS_CLR
+
+            # Outer row for left/right alignment
+            row = tk.Frame(self._chat_frame, bg=BG2)
+            row.pack(fill=tk.X, padx=8, pady=3)
+
+            # Bubble
+            bubble = tk.Frame(row, bg=bubble_bg, padx=12, pady=8)
+            side = tk.RIGHT if is_user else tk.LEFT
+            pad_l = 80 if is_user else 0
+            pad_r = 0 if is_user else 80
+            bubble.pack(anchor=tk.E if is_user else tk.W,
+                        side=side, padx=(pad_l, pad_r))
+
+            # Name
+            tk.Label(bubble, text=prefix, font=("Consolas", 9, "bold"),
+                     fg=name_fg, bg=bubble_bg, anchor=tk.W).pack(anchor=tk.W)
+
+            # Body text with wrapping
+            wrap = max(200, self._chat_canvas.winfo_width() - 180)
+            tk.Label(bubble, text=text, font=("Consolas", 11),
+                     fg=text_fg, bg=bubble_bg, anchor=tk.W,
+                     justify=tk.LEFT, wraplength=wrap).pack(anchor=tk.W)
+
+            # Rewind button for GLaDOS bubbles
+            if msg_ref is not None:
+                self._rewind_map[id(bubble)] = (msg_ref, row)
+                rw_btn = tk.Button(
+                    bubble, text="\u23EA", command=lambda: self._do_rewind(bubble),
+                    font=("Consolas", 9), bg=bubble_bg, fg=TEXT_DIM,
+                    activebackground=ACCENT, activeforeground=BG,
+                    relief=tk.FLAT, padx=4, pady=0, cursor="hand2", borderwidth=0,
+                )
+                hide_id = [None]
+
+                def _show(e, btn=rw_btn):
+                    if hide_id[0]:
+                        bubble.after_cancel(hide_id[0])
+                        hide_id[0] = None
+                    btn.place(relx=1.0, rely=0, anchor=tk.NE, x=-2, y=2)
+
+                def _sched_hide(e, btn=rw_btn):
+                    if hide_id[0]:
+                        bubble.after_cancel(hide_id[0])
+                    hide_id[0] = bubble.after(300, lambda: btn.place_forget())
+
+                bubble.bind("<Enter>", _show)
+                bubble.bind("<Leave>", _sched_hide)
+                rw_btn.bind("<Enter>", _show)
+                rw_btn.bind("<Leave>", _sched_hide)
+                for child in bubble.winfo_children():
+                    child.bind("<Enter>", _show)
+                    child.bind("<Leave>", _sched_hide)
+
+            self._chat_bubbles.append((row, tag, msg_ref))
+            self._bind_scroll(row)
+            self._scroll_to_bottom()
         self.after(0, _do)
 
     def _append_system(self, text: str):
         def _do():
-            self.chat.configure(state=tk.NORMAL)
-            self.chat.insert(tk.END, f"{text}\n", "system")
-            self.chat.configure(state=tk.DISABLED)
-            self.chat.see(tk.END)
+            row = tk.Frame(self._chat_frame, bg=BG2)
+            row.pack(fill=tk.X, padx=8, pady=2)
+            tk.Label(row, text=text, font=("Consolas", 10, "italic"),
+                     fg=TEXT_DIM, bg=BG2).pack(anchor=tk.CENTER)
+            self._chat_bubbles.append((row, "system", None))
+            self._bind_scroll(row)
+            self._scroll_to_bottom()
         self.after(0, _do)
 
     # ---------------------------------------------------------------- callbacks (from engine threads)
@@ -642,7 +733,11 @@ class GladosApp(tk.Tk):
         if role == "user":
             self._append_chat("user", "You", text)
         else:
-            self._append_chat("glados", "GLaDOS", text)
+            # Pass the actual message dict reference for rewind tracking.
+            # The assistant message is always appended to engine.messages
+            # before this callback is invoked.
+            self._append_chat("glados", "GLaDOS", text,
+                              msg_ref=self.engine.messages[-1])
 
     def _cb_volume(self, rms, ambient, threshold, is_speech):
         self._meter_rms = rms
@@ -652,10 +747,13 @@ class GladosApp(tk.Tk):
 
     def _cb_error(self, error: str):
         def _do():
-            self.chat.configure(state=tk.NORMAL)
-            self.chat.insert(tk.END, f"[Error] {error}\n", "error")
-            self.chat.configure(state=tk.DISABLED)
-            self.chat.see(tk.END)
+            row = tk.Frame(self._chat_frame, bg=BG2)
+            row.pack(fill=tk.X, padx=8, pady=2)
+            tk.Label(row, text=f"[Error] {error}", font=("Consolas", 10),
+                     fg=ERROR, bg=BG2).pack(anchor=tk.W, padx=10)
+            self._chat_bubbles.append((row, "error", None))
+            self._bind_scroll(row)
+            self._scroll_to_bottom()
         self.after(0, _do)
 
     # ---------------------------------------------------------------- meter
@@ -741,10 +839,40 @@ class GladosApp(tk.Tk):
             return
         self.engine.stop_speaking()
 
+    # ---------------------------------------------------------------- rewind
+    def _do_rewind(self, bubble):
+        """Rewind conversation history to the selected assistant message."""
+        key = id(bubble)
+        if key not in self._rewind_map:
+            return
+        msg_ref, target_row = self._rewind_map[key]
+        try:
+            msg_idx = self.engine.messages.index(msg_ref)
+        except ValueError:
+            return
+        self.engine.messages = self.engine.messages[:msg_idx + 1]
+        # Find the target row's position in the bubble list and destroy everything after it
+        found = False
+        to_remove = []
+        for row, role, ref in self._chat_bubbles:
+            if found:
+                to_remove.append((row, role, ref))
+            elif row is target_row:
+                found = True
+        for row, role, ref in to_remove:
+            row.destroy()
+        self._chat_bubbles = [(r, rl, rf) for r, rl, rf in self._chat_bubbles
+                              if r.winfo_exists()]
+        # Clean up stale rewind entries
+        self._rewind_map = {k: v for k, v in self._rewind_map.items()
+                            if v[0] in self.engine.messages}
+        self._append_system(f"Conversation rewound — {len(self.engine.messages) - 1} messages kept.")
+
     def _clear_chat(self):
-        self.chat.configure(state=tk.NORMAL)
-        self.chat.delete("1.0", tk.END)
-        self.chat.configure(state=tk.DISABLED)
+        for row, _role, _ref in self._chat_bubbles:
+            row.destroy()
+        self._chat_bubbles.clear()
+        self._rewind_map.clear()
         self.engine.clear_history()
         self._append_system("Chat cleared.")
 
@@ -765,6 +893,8 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(parent)
         self.parent_app = parent
         self.settings = settings
+        import copy
+        self._original = copy.deepcopy(settings)
         self.title("Settings")
         self.geometry("620x560")
         self.minsize(520, 450)
@@ -792,6 +922,7 @@ class SettingsDialog(tk.Toplevel):
         self._build_llm_tab()
         self._build_vad_tab()
         self._build_audio_tab()
+        self._build_pronunciation_tab()
 
         # Bottom buttons
         btn_frame = tk.Frame(self, bg=BG)
@@ -799,7 +930,7 @@ class SettingsDialog(tk.Toplevel):
 
         for text, cmd in [("Reset Defaults", self._reset_defaults),
                           ("Load", self._load_file),
-                          ("Save", self._save_file),
+                          ("Undo Changes", self._undo_changes),
                           ("Apply & Close", self._apply)]:
             tk.Button(btn_frame, text=text, command=cmd,
                       **self._btn()).pack(side=tk.LEFT, padx=(0, 6))
@@ -1064,6 +1195,77 @@ class SettingsDialog(tk.Toplevel):
                           state="readonly", font=("Consolas", 10), width=40)
         om.grid(row=2, column=1, sticky=tk.W, padx=10, pady=(8, 2))
 
+    def _build_pronunciation_tab(self):
+        tab = self._make_tab("Pronunciation")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
+
+        # Header
+        tk.Label(tab, text="Fix TTS pronunciations (applied before speech synthesis)",
+                 font=("Consolas", 9), fg=TEXT_DIM, bg=BG2, anchor=tk.W
+                 ).grid(row=0, column=0, sticky=tk.W, padx=10, pady=(8, 2))
+
+        # Scrollable list area
+        list_frame = tk.Frame(tab, bg=BG2)
+        list_frame.grid(row=1, column=0, sticky=tk.NSEW, padx=10, pady=(4, 4))
+        list_frame.columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(list_frame, bg=BG2, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=canvas.yview)
+        self._pron_inner = tk.Frame(canvas, bg=BG2)
+        self._pron_inner.bind("<Configure>",
+                              lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self._pron_inner, anchor=tk.NW)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._pron_rows: list[tuple[tk.Entry, tk.Entry, tk.Button]] = []
+        replacements = self.settings.get("tts_replacements", {})
+        for find, replace in replacements.items():
+            self._add_pron_row(find, replace)
+
+        # Add button
+        btn_frame = tk.Frame(tab, bg=BG2)
+        btn_frame.grid(row=2, column=0, sticky=tk.W, padx=10, pady=(0, 8))
+        tk.Button(btn_frame, text="+ Add Rule", command=lambda: self._add_pron_row("", ""),
+                  font=("Consolas", 9, "bold"), bg=BG3, fg=TEXT,
+                  activebackground=ACCENT, activeforeground=BG,
+                  relief=tk.FLAT, padx=8, pady=2, cursor="hand2", borderwidth=0,
+                  ).pack(side=tk.LEFT)
+
+    def _add_pron_row(self, find: str = "", replace: str = ""):
+        row_frame = tk.Frame(self._pron_inner, bg=BG2)
+        row_frame.pack(fill=tk.X, pady=2)
+
+        tk.Label(row_frame, text="Say", font=("Consolas", 9),
+                 fg=TEXT_DIM, bg=BG2).pack(side=tk.LEFT, padx=(0, 4))
+        find_entry = tk.Entry(row_frame, font=("Consolas", 10),
+                              bg=BG3, fg=TEXT, insertbackground=TEXT,
+                              relief=tk.FLAT, borderwidth=4, width=20)
+        find_entry.insert(0, find)
+        find_entry.pack(side=tk.LEFT, padx=(0, 6))
+
+        tk.Label(row_frame, text="as", font=("Consolas", 9),
+                 fg=TEXT_DIM, bg=BG2).pack(side=tk.LEFT, padx=(0, 4))
+        replace_entry = tk.Entry(row_frame, font=("Consolas", 10),
+                                 bg=BG3, fg=TEXT, insertbackground=TEXT,
+                                 relief=tk.FLAT, borderwidth=4, width=20)
+        replace_entry.insert(0, replace)
+        replace_entry.pack(side=tk.LEFT, padx=(0, 6))
+
+        del_btn = tk.Button(row_frame, text="\u2715", command=lambda: self._del_pron_row(row_frame),
+                            font=("Consolas", 9, "bold"), bg=BG3, fg=ERROR,
+                            activebackground=ERROR, activeforeground=BG,
+                            relief=tk.FLAT, padx=4, pady=0, cursor="hand2", borderwidth=0)
+        del_btn.pack(side=tk.LEFT)
+
+        self._pron_rows.append((find_entry, replace_entry, del_btn, row_frame))
+
+    def _del_pron_row(self, row_frame):
+        self._pron_rows = [(f, r, b, rf) for f, r, b, rf in self._pron_rows if rf is not row_frame]
+        row_frame.destroy()
+
     # ---- actions ----
     def _collect(self):
         """Read all widget values back into self.settings."""
@@ -1096,6 +1298,15 @@ class SettingsDialog(tk.Toplevel):
 
             self._set_nested(key, val)
 
+        # Collect pronunciation replacements
+        replacements = {}
+        for find_e, replace_e, _btn, _frame in self._pron_rows:
+            find = find_e.get().strip()
+            replace = replace_e.get().strip()
+            if find:
+                replacements[find] = replace
+        self.settings["tts_replacements"] = replacements
+
     def _apply(self):
         old_model = self.settings["llm"]["model"]
         self._collect()
@@ -1127,10 +1338,10 @@ class SettingsDialog(tk.Toplevel):
                 app.engine.initialize()
                 app.engine.clear_history()
                 greeting = app.settings["general"]["greeting"]
+                app.engine.messages.append({"role": "assistant", "content": greeting})
                 app._cb_message("assistant", greeting)
                 app._cb_status("Speaking")
                 app.engine.speak(greeting)
-                app.engine.messages.append({"role": "assistant", "content": greeting})
                 app.engine.calibrate()
                 app._cb_status("Listening")
                 # Restart the poll loop
@@ -1148,16 +1359,12 @@ class SettingsDialog(tk.Toplevel):
         self.destroy()
         SettingsDialog(self.parent_app, self.settings)
 
-    def _save_file(self):
-        path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON", "*.json")],
-            title="Save Settings",
-        )
-        if path:
-            self._collect()
-            with open(path, "w") as f:
-                json.dump(self.settings, f, indent=2)
+    def _undo_changes(self):
+        import copy
+        for section in self._original:
+            self.settings[section] = copy.deepcopy(self._original[section])
+        self.destroy()
+        SettingsDialog(self.parent_app, self.settings)
 
     def _load_file(self):
         path = filedialog.askopenfilename(
