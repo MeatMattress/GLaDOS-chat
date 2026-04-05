@@ -31,9 +31,49 @@ def _load_settings() -> dict:
     return defaults
 
 
+def _check_model(settings: dict) -> dict:
+    """If no model is cached, prompt the user to pick and download one."""
+    model_id = settings["llm"]["model"]
+
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        result = try_to_load_from_cache(model_id, "config.json")
+        if isinstance(result, str):
+            return settings  # already cached
+    except Exception:
+        return settings  # can't check — proceed and let engine handle it
+
+    models = [
+        ("Gemma 4 1B — Smaller, faster (~2 GB)",   "google/gemma-4-E1B-it"),
+        ("Gemma 4 2B — More capable (~5 GB)",       "google/gemma-4-E2B-it"),
+    ]
+
+    print()
+    print("  No language model found. Which model would you like to download?")
+    for i, (label, _) in enumerate(models, 1):
+        print(f"    {i}) {label}")
+    choice = input("\n  Enter choice (1 or 2): ").strip()
+    chosen = models[int(choice) - 1][1] if choice in ("1", "2") else models[0][1]
+
+    print(f"\n  Downloading {chosen}... (this may take a while)\n")
+    try:
+        from huggingface_hub import snapshot_download
+        snapshot_download(chosen)
+    except Exception as e:
+        print(f"\n  [Error] Download failed: {e}")
+        sys.exit(1)
+
+    settings["llm"]["model"] = chosen
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
+    print(f"\n  Model saved. Continuing...\n")
+    return settings
+
+
 class GladosChatCLI:
     def __init__(self):
         settings = _load_settings()
+        settings = _check_model(settings)
         self.engine = GladosEngine(
             settings,
             on_status=lambda s: print(f"\r  [{s}]" + " " * 20, end="", flush=True),

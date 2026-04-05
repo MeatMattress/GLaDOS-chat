@@ -4,8 +4,10 @@ Run this file (or use run.bat) to start the application.
 """
 
 import json
+import os
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
 from pathlib import Path
@@ -63,6 +65,202 @@ def save_settings(settings: dict):
 
 
 # ===================================================================
+# First-run model check
+# ===================================================================
+LLM_MODELS = [
+    {
+        "label": "Gemma 4 1B",
+        "desc": "Smaller and faster — good for low-VRAM GPUs",
+        "size": "~2 GB",
+        "id": "google/gemma-4-E1B-it",
+    },
+    {
+        "label": "Gemma 4 2B",
+        "desc": "More capable — recommended with 6+ GB VRAM",
+        "size": "~5 GB",
+        "id": "google/gemma-4-E2B-it",
+    },
+]
+
+
+def _is_model_cached(model_id: str) -> bool:
+    """Check if a HuggingFace model is already in the local cache."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        result = try_to_load_from_cache(model_id, "config.json")
+        return isinstance(result, str)
+    except Exception:
+        return False
+
+
+def _any_known_model_cached() -> bool:
+    """Check if any of the offered models are already cached."""
+    return any(_is_model_cached(m["id"]) for m in LLM_MODELS)
+
+
+class ModelDownloadDialog(tk.Toplevel):
+    """First-run dialog: pick and download a language model with progress."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent_app = parent
+        self.chosen_model = None
+        self._downloading = False
+
+        self.title("GLaDOS — First Time Setup")
+        self.geometry("520x400")
+        self.configure(bg=BG)
+        self.transient(parent)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.resizable(False, False)
+
+        # Center on screen
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - 520) // 2
+        y = (self.winfo_screenheight() - 400) // 2
+        self.geometry(f"+{x}+{y}")
+
+        # ---- Title ----
+        tk.Label(self, text="Welcome to GLaDOS", font=("Consolas", 18, "bold"),
+                 fg=ACCENT, bg=BG).pack(pady=(24, 4))
+        tk.Label(self, text="Select a language model to download.",
+                 font=("Consolas", 11), fg=TEXT_DIM, bg=BG).pack(pady=(0, 16))
+
+        # ---- Model choices ----
+        self.model_var = tk.StringVar(value=LLM_MODELS[0]["id"])
+
+        choice_frame = tk.Frame(self, bg=BG)
+        choice_frame.pack(fill=tk.X, padx=30)
+
+        for m in LLM_MODELS:
+            f = tk.Frame(choice_frame, bg=BG2, padx=12, pady=8,
+                         highlightbackground=BORDER, highlightthickness=1)
+            f.pack(fill=tk.X, pady=4)
+            tk.Radiobutton(
+                f, text=f"{m['label']}  ({m['size']})",
+                variable=self.model_var, value=m["id"],
+                font=("Consolas", 11, "bold"), fg=TEXT, bg=BG2,
+                selectcolor=BG3, activebackground=BG2, activeforeground=TEXT,
+                anchor=tk.W,
+            ).pack(anchor=tk.W)
+            tk.Label(f, text=m["desc"], font=("Consolas", 9),
+                     fg=TEXT_DIM, bg=BG2, anchor=tk.W).pack(anchor=tk.W, padx=(20, 0))
+
+        # ---- Download button ----
+        self.btn_download = tk.Button(
+            self, text="Download", command=self._start_download,
+            font=("Consolas", 12, "bold"), bg=ACCENT, fg=BG,
+            activebackground=ACCENT_HOVER, activeforeground=BG,
+            relief=tk.FLAT, padx=20, pady=6, cursor="hand2", borderwidth=0,
+        )
+        self.btn_download.pack(pady=(20, 10))
+
+        # ---- Progress bar ----
+        style = ttk.Style(self)
+        style.configure("DL.Horizontal.TProgressbar",
+                        troughcolor=BG3, background=ACCENT, thickness=20)
+        self.progress = ttk.Progressbar(
+            self, style="DL.Horizontal.TProgressbar",
+            mode="determinate", maximum=100, length=440,
+        )
+        self.progress.pack(pady=(0, 4))
+
+        # ---- Status label ----
+        self.status_label = tk.Label(self, text="", font=("Consolas", 9),
+                                     fg=TEXT_DIM, bg=BG, anchor=tk.W)
+        self.status_label.pack(fill=tk.X, padx=40)
+
+    # ---- download logic ----
+    def _start_download(self):
+        self.btn_download.configure(state=tk.DISABLED, text="Downloading...")
+        self.status_label.configure(fg=TEXT_DIM)
+        self._downloading = True
+        model_id = self.model_var.get()
+        threading.Thread(target=self._download_thread, args=(model_id,), daemon=True).start()
+
+    def _download_thread(self, model_id):
+        try:
+            from huggingface_hub import HfApi, snapshot_download
+            try:
+                from huggingface_hub.constants import HF_HUB_CACHE
+            except ImportError:
+                HF_HUB_CACHE = str(Path.home() / ".cache" / "huggingface" / "hub")
+
+            # Get total model size from the API
+            self._set_status("Fetching model info...")
+            api = HfApi()
+            info = api.model_info(model_id)
+            total_size = sum(s.size for s in info.siblings if s.size) or 1
+            total_mb = total_size / (1024 * 1024)
+
+            # Locate cache directory for this model
+            cache_dir = Path(HF_HUB_CACHE) / f"models--{model_id.replace('/', '--')}"
+
+            def get_cache_size():
+                try:
+                    return sum(f.stat().st_size for f in cache_dir.rglob("*") if f.is_file())
+                except Exception:
+                    return 0
+
+            initial_size = get_cache_size()
+
+            # Start the actual download in a sub-thread
+            done = threading.Event()
+            dl_error = [None]
+
+            def _do_download():
+                try:
+                    snapshot_download(model_id)
+                except Exception as e:
+                    dl_error[0] = e
+                done.set()
+
+            threading.Thread(target=_do_download, daemon=True).start()
+
+            # Poll cache size for progress updates
+            while not done.is_set():
+                current = max(get_cache_size() - initial_size, 0)
+                pct = min(current / total_size * 100, 99)
+                mb = current / (1024 * 1024)
+                self._set_status(f"Downloading... {mb:,.0f} / {total_mb:,.0f} MB")
+                self._set_progress(pct)
+                done.wait(0.5)
+
+            if dl_error[0]:
+                raise dl_error[0]
+
+            self._set_progress(100)
+            self._set_status("Download complete!")
+            self.after(300, lambda: self._on_complete(model_id))
+
+        except Exception as e:
+            self.after(0, lambda: self._on_error(str(e)))
+
+    def _set_status(self, text):
+        self.after(0, lambda: self.status_label.configure(text=text))
+
+    def _set_progress(self, pct):
+        self.after(0, lambda: self.progress.configure(value=pct))
+
+    def _on_complete(self, model_id):
+        self._downloading = False
+        self.chosen_model = model_id
+        self.destroy()
+
+    def _on_error(self, error):
+        self._downloading = False
+        self.btn_download.configure(state=tk.NORMAL, text="Retry Download")
+        self.status_label.configure(text=f"Error: {error}", fg=ERROR)
+        self.progress.configure(value=0)
+
+    def _on_close(self):
+        if self._downloading:
+            return  # don't close mid-download
+        self.destroy()  # chosen_model stays None → app will exit
+
+
+# ===================================================================
 # Main application
 # ===================================================================
 class GladosApp(tk.Tk):
@@ -96,9 +294,30 @@ class GladosApp(tk.Tk):
         self._build_ui()
         self._apply_theme()
 
-        # --- boot sequence ---
+        # --- boot sequence (check model first) ---
         self._append_system("Initializing GLaDOS Voice Chat...")
-        self.after(100, self._boot)
+        self.after(100, self._check_model)
+
+    # ---------------------------------------------------------------- first-run model check
+    def _check_model(self):
+        """If the configured LLM isn't cached, show the download dialog first."""
+        model_id = self.settings["llm"]["model"]
+        if _is_model_cached(model_id):
+            self._boot()
+            return
+
+        # First run — show model selection dialog
+        dialog = ModelDownloadDialog(self)
+        self.wait_window(dialog)
+
+        if dialog.chosen_model:
+            self.settings["llm"]["model"] = dialog.chosen_model
+            self.engine.settings["llm"]["model"] = dialog.chosen_model
+            save_settings(self.settings)
+            self._boot()
+        else:
+            # User closed without downloading — exit
+            self.destroy()
 
     # ---------------------------------------------------------------- boot
     def _boot(self):
