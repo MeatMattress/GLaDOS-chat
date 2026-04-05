@@ -55,8 +55,8 @@ def _check_model(settings: dict) -> dict:
         return settings  # can't check — proceed and let engine handle it
 
     models = [
-        ("Gemma 4 1B — Smaller, faster (~2 GB)",   "google/gemma-4-E1B-it"),
-        ("Gemma 4 2B — More capable (~5 GB)",       "google/gemma-4-E2B-it"),
+        ("Gemma 4 E2B — Smaller, faster (~5 GB)",   "google/gemma-4-E2B-it"),
+        ("Gemma 4 E4B — More capable (~9 GB)",      "google/gemma-4-E4B-it"),
     ]
 
     print()

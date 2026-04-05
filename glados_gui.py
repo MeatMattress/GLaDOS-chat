@@ -204,16 +204,16 @@ class SetupDialog(tk.Toplevel):
 # ===================================================================
 LLM_MODELS = [
     {
-        "label": "Gemma 4 1B",
+        "label": "Gemma 4 E2B",
         "desc": "Smaller and faster — good for low-VRAM GPUs",
-        "size": "~2 GB",
-        "id": "google/gemma-4-E1B-it",
-    },
-    {
-        "label": "Gemma 4 2B",
-        "desc": "More capable — recommended with 6+ GB VRAM",
         "size": "~5 GB",
         "id": "google/gemma-4-E2B-it",
+    },
+    {
+        "label": "Gemma 4 E4B",
+        "desc": "More capable — recommended with 8+ GB VRAM",
+        "size": "~9 GB",
+        "id": "google/gemma-4-E4B-it",
     },
 ]
 
