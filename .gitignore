@@ -1,7 +1,22 @@
+# Virtual environment
 venv/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+
+# GLaDOS-TTS (cloned during setup)
+GLaDOS-TTS/
+
+# Runtime
 *.log
 *.wav
 *.tmp
+
+# Secrets
 .env
+
+# OS
+.DS_Store
+Thumbs.db

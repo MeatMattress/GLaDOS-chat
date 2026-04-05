@@ -15,6 +15,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: Check git
+git --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] git not found. Install git and add to PATH.
+    pause
+    exit /b 1
+)
+
 :: Create venv if it doesn't exist
 echo [1/3] Setting up virtual environment...
 if not exist "venv" (
@@ -23,8 +31,9 @@ if not exist "venv" (
 call venv\Scripts\activate.bat
 echo       Done.
 
-:: Install Python dependencies (torch + transformers can be large)
-echo [2/3] Installing Python dependencies (this may take a while first time)...
+:: Install Python dependencies
+echo [2/3] Installing Python dependencies (this may take a while)...
+pip install --upgrade pip --quiet
 pip install -r requirements.txt --quiet
 if errorlevel 1 (
     echo [ERROR] Failed to install dependencies.
@@ -33,23 +42,11 @@ if errorlevel 1 (
 )
 echo       Done.
 
-:: Download GLaDOS TTS models if missing
-echo [3/3] Checking GLaDOS TTS models...
-if not exist "GLaDOS-TTS\glados\models\glados.onnx" (
-    echo       Downloading glados.onnx...
-    curl -L "https://github.com/dnhkng/GlaDOS/releases/download/0.1/glados.onnx" -o "GLaDOS-TTS\glados\models\glados.onnx"
-)
-if not exist "GLaDOS-TTS\glados\models\phomenizer_en.onnx" (
-    echo       Downloading phomenizer_en.onnx...
-    curl -L "https://github.com/dnhkng/GlaDOS/releases/download/0.1/phomenizer_en.onnx" -o "GLaDOS-TTS\glados\models\phomenizer_en.onnx"
-)
-echo       Done.
+:: Download models via cross-platform script
+echo [3/3] Downloading models...
+python setup_models.py %*
 
 echo.
-echo   NOTE: The Gemma 4 E2B model will be downloaded from HuggingFace
-echo   automatically on first launch (~4-5GB).
-echo.
-echo ============================================================
 echo   Setup complete! Run "run.bat" to start GLaDOS Chat.
-echo ============================================================
+echo.
 pause
