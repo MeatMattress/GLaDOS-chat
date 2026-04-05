@@ -176,11 +176,12 @@ class GladosEngine:
         self.on_status(f"Loading {model_id}...")
         log.info("Loading model %s", model_id)
         try:
-            self.processor = AutoProcessor.from_pretrained(model_id)
+            self.processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
             self.model = AutoModelForMultimodalLM.from_pretrained(
                 model_id,
                 dtype="auto",
                 device_map="auto",
+                local_files_only=True,
             )
             # Clear invalid generation defaults so generate() doesn't warn
             self.model.generation_config.top_p = None
