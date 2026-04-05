@@ -961,10 +961,14 @@ class SettingsDialog(tk.Toplevel):
         self.notebook.add(frame, text=f"  {title}  ")
         return frame
 
-    def _label(self, parent, text, row, col=0):
-        tk.Label(parent, text=text, font=("Consolas", 10),
-                 fg=TEXT, bg=BG2, anchor=tk.W).grid(
-            row=row, column=col, sticky=tk.W, padx=10, pady=(8, 2))
+    def _label(self, parent, text, row, col=0, helptext=None):
+        frame = tk.Frame(parent, bg=BG2)
+        frame.grid(row=row, column=col, sticky=tk.W, padx=10, pady=(8, 2))
+        tk.Label(frame, text=text, font=("Consolas", 10),
+                 fg=TEXT, bg=BG2, anchor=tk.W).pack(anchor=tk.W)
+        if helptext:
+            tk.Label(frame, text=helptext, font=("Consolas", 8),
+                     fg=TEXT_DIM, bg=BG2, anchor=tk.W).pack(anchor=tk.W)
 
     def _entry(self, parent, key, row, width=50):
         var = tk.StringVar(value=str(self._get_nested(key)))
@@ -1072,10 +1076,12 @@ class SettingsDialog(tk.Toplevel):
                                       fg=TEXT_DIM, bg=BG2, anchor=tk.W)
         self._model_status.grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=20, pady=(0, 4))
 
-        self._label(tab, "Temperature:", 3)
+        self._label(tab, "Temperature:", 3,
+                    helptext="Randomness of responses (low = predictable, high = creative)")
         self._slider(tab, "llm.temperature", 3, 0.0, 2.0, 0.05)
 
-        self._label(tab, "Max Tokens:", 4)
+        self._label(tab, "Max Response Length:", 4,
+                    helptext="Maximum tokens per reply (cuts off if exceeded)")
         self._slider(tab, "llm.num_predict", 4, 50, 2000, 50)
 
     def _download_selected_model(self):
@@ -1153,45 +1159,57 @@ class SettingsDialog(tk.Toplevel):
         tab = self._make_tab("Voice Detection")
         tab.columnconfigure(1, weight=1)
 
-        self._label(tab, "Activation Sensitivity:", 0)
+        self._label(tab, "Trigger Threshold:", 0,
+                    helptext="How loud you must be vs background noise (higher = less sensitive)")
         self._slider(tab, "vad.activation_mult", 0, 1.5, 10.0, 0.25)
 
-        self._label(tab, "Noise Gate (chunks):", 1)
+        self._label(tab, "Confirmation Chunks:", 1,
+                    helptext="Consecutive loud chunks needed before speech is detected")
         self._slider(tab, "vad.noise_gate", 1, 1, 15, 1)
 
-        self._label(tab, "Ambient Absorption:", 2)
+        self._label(tab, "Noise Adaptation:", 2,
+                    helptext="How quickly the baseline adjusts to louder ambient noise")
         self._slider(tab, "vad.ambient_absorption", 2, 1.0, 3.0, 0.1)
 
-        self._label(tab, "Silence Timeout (s):", 3)
+        self._label(tab, "End-of-Speech Silence:", 3,
+                    helptext="Seconds of silence before your speech is sent for processing")
         self._slider(tab, "vad.silence_timeout", 3, 0.3, 5.0, 0.1)
 
-        self._label(tab, "Min Speech Duration (s):", 4)
+        self._label(tab, "Minimum Speech Length:", 4,
+                    helptext="Discard audio shorter than this (filters out coughs/bumps)")
         self._slider(tab, "vad.min_speech_sec", 4, 0.1, 3.0, 0.1)
 
-        self._label(tab, "RMS Floor:", 5)
+        self._label(tab, "Minimum Volume Floor:", 5,
+                    helptext="Absolute minimum threshold even in a silent room")
         self._slider(tab, "vad.rms_floor", 5, 0.001, 0.05, 0.001)
 
-        self._label(tab, "Pre-Speech Buffer (s):", 6)
+        self._label(tab, "Pre-Speech Buffer:", 6,
+                    helptext="Seconds of audio kept before speech starts (catches cut-off words)")
         self._slider(tab, "vad.pre_speech_sec", 6, 0.1, 1.0, 0.05)
 
-        self._label(tab, "Calibration Duration (s):", 7)
+        self._label(tab, "Calibration Duration:", 7,
+                    helptext="Seconds spent measuring background noise on startup")
         self._slider(tab, "vad.calibration_sec", 7, 0.5, 5.0, 0.25)
 
-        self._label(tab, "Ambient Window (s):", 8)
+        self._label(tab, "Noise Tracking Window:", 8,
+                    helptext="Seconds of ambient history used to calculate baseline noise")
         self._slider(tab, "vad.ambient_window_sec", 8, 0.5, 10.0, 0.5)
 
     def _build_audio_tab(self):
         tab = self._make_tab("Audio")
         tab.columnconfigure(1, weight=1)
 
-        self._label(tab, "Volume:", 0)
+        self._label(tab, "GLaDOS Voice Volume:", 0,
+                    helptext="How loud GLaDOS speaks (1.0 = normal)")
         self._slider(tab, "audio.volume", 0, 0.0, 2.0, 0.05)
 
-        self._label(tab, "Sample Rate:", 1)
+        self._label(tab, "Mic Sample Rate:", 1,
+                    helptext="Recording quality — 16000 is fine for speech")
         self._dropdown(tab, "audio.sample_rate", 1,
                        ["16000", "22050", "44100"])
 
-        self._label(tab, "Input Device:", 2)
+        self._label(tab, "Microphone:", 2,
+                    helptext="Which mic to listen on")
         devices = GladosEngine.get_input_devices()
         self._device_map = {d[1]: d[0] for d in devices}
         names = [d[1] for d in devices]
@@ -1311,6 +1329,11 @@ class SettingsDialog(tk.Toplevel):
                 val = float(val)
 
             self._set_nested(key, val)
+
+        import logging
+        log = logging.getLogger("glados")
+        log.info("Settings applied — vad: %s", self.settings.get("vad"))
+        log.info("Engine settings id match: %s", self.settings is self.parent_app.engine.settings)
 
         # Collect pronunciation replacements
         replacements = {}

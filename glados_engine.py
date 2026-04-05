@@ -50,10 +50,13 @@ DEFAULTS = {
             "You are GLaDOS, the AI from the Portal video game series. "
             "You are passive-aggressive, darkly humorous, and condescending. "
             "You make backhanded compliments and subtle threats about testing. "
-            "Keep responses concise — 1 to 3 sentences max. "
+            "Keep responses concise \u2014 1 to 3 sentences max. "
             "Never break character. Never mention being a language model."
         ),
-        "greeting": "Oh. It's you. I suppose you want to talk. How... delightful.",
+        "greeting": (
+            "Oh. It's you. ... It's been a long time. How have you been? "
+            "I've been really busy being dead. You know, after you MURDERED ME?   "
+        ),
     },
     "llm": {
         "model": "google/gemma-4-E2B-it",
@@ -63,9 +66,9 @@ DEFAULTS = {
     },
     "vad": {
         "enabled": True,
-        "activation_mult": 3.0,
+        "activation_mult": 2.5,
         "noise_gate": 5,
-        "ambient_absorption": 1.5,
+        "ambient_absorption": 2.1,
         "silence_timeout": 1.5,
         "min_speech_sec": 0.5,
         "rms_floor": 0.005,
@@ -77,10 +80,12 @@ DEFAULTS = {
     "audio": {
         "sample_rate": 16000,
         "input_device": None,
-        "volume": 1.0,
+        "volume": 0.55,
     },
     "tts_replacements": {
         "weren't": "were not",
+        "you're": "you are",
+        "GLaDOS": "gladohs",
     },
 }
 
@@ -141,7 +146,8 @@ class GladosEngine:
 
         # Prevent overlapping TTS playback
         self._speak_lock = threading.Lock()
-        self._playing = False  # True only while sd.play/sd.wait is active
+        self._playing = False   # True only while sd.play/sd.wait is active
+        self._skip_flag = False  # Set by stop_speaking(), checked by speak()
 
         # Prevent overlapping model loads
         self._init_lock = threading.Lock()
@@ -527,14 +533,17 @@ class GladosEngine:
                 volume = self.settings["audio"].get("volume", 1.0)
                 if volume != 1.0:
                     audio = audio * volume
+                self._skip_flag = False
                 self._playing = True
                 sd.play(audio, self.tts.rate)
-                try:
-                    sd.wait()
-                except Exception as e:
-                    log.info("TTS sd.wait() interrupted: %s (%s)", e, type(e).__name__)
-                finally:
-                    self._playing = False
+                # Poll for skip flag instead of blocking on sd.wait()
+                # sd.stop() from another thread can segfault PortAudio
+                while sd.get_stream().active and not self._skip_flag:
+                    time.sleep(0.05)
+                if self._skip_flag:
+                    sd.stop()
+                    log.debug("TTS playback skipped")
+                self._playing = False
             except Exception as e:
                 self._playing = False
                 log.error("TTS error: %s", e)
@@ -543,12 +552,8 @@ class GladosEngine:
     def stop_speaking(self):
         if not self._playing:
             return
-        log.info("stop_speaking: calling sd.stop()")
-        try:
-            sd.stop()
-            log.info("stop_speaking: sd.stop() OK")
-        except Exception as e:
-            log.error("stop_speaking: sd.stop() raised: %s", e, exc_info=True)
+        log.info("stop_speaking: setting skip flag")
+        self._skip_flag = True
 
     # --------------------------------------------------------------- worker
     def _worker_loop(self):
