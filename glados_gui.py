@@ -869,17 +869,18 @@ class SettingsDialog(tk.Toplevel):
         var = tk.StringVar(value=current_model)
         self._vars["llm.model"] = var
         om = ttk.Combobox(tab, textvariable=var, values=model_options,
-                          font=("Consolas", 10), width=35)
+                          state="readonly", font=("Consolas", 10), width=35)
         om.grid(row=0, column=1, sticky=tk.W, padx=10, pady=(8, 2))
+
         tk.Label(tab, text="Changing models requires a restart to take effect.",
                  font=("Consolas", 8), fg=TEXT_DIM, bg=BG2
-                 ).grid(row=0, column=1, sticky=tk.E, padx=10, pady=(8, 2))
+                 ).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=20, pady=(0, 4))
 
-        self._label(tab, "Temperature:", 1)
-        self._slider(tab, "llm.temperature", 1, 0.0, 2.0, 0.05)
+        self._label(tab, "Temperature:", 2)
+        self._slider(tab, "llm.temperature", 2, 0.0, 2.0, 0.05)
 
-        self._label(tab, "Max Tokens:", 2)
-        self._slider(tab, "llm.num_predict", 2, 50, 2000, 50)
+        self._label(tab, "Max Tokens:", 3)
+        self._slider(tab, "llm.num_predict", 3, 50, 2000, 50)
 
     def _build_vad_tab(self):
         tab = self._make_tab("Voice Detection")
