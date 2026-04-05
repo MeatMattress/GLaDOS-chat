@@ -5,6 +5,7 @@ Run this file (or use run.bat) to start the application.
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -12,12 +13,25 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
 from pathlib import Path
 
-from glados_engine import GladosEngine, get_defaults
-
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SETTINGS_FILE = Path(__file__).parent / "settings.json"
+SCRIPT_DIR = Path(__file__).parent.resolve()
+SETTINGS_FILE = SCRIPT_DIR / "settings.json"
+REQUIREMENTS_FILE = SCRIPT_DIR / "requirements.txt"
+TTS_DIR = SCRIPT_DIR / "GLaDOS-TTS"
+
+# ---------------------------------------------------------------------------
+# Try importing the engine (requires numpy, torch, sounddevice, GLaDOS-TTS…)
+# If anything is missing, we show the setup dialog before proceeding.
+# ---------------------------------------------------------------------------
+try:
+    from glados_engine import GladosEngine, get_defaults
+    _DEPS_READY = True
+except ImportError:
+    GladosEngine = None
+    get_defaults = None
+    _DEPS_READY = False
 
 # ---------------------------------------------------------------------------
 # Theme colours  (Portal / GLaDOS aesthetic)
@@ -62,6 +76,127 @@ def load_settings() -> dict:
 def save_settings(settings: dict):
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=2)
+
+
+# ===================================================================
+# Dependency setup dialog (shown when packages or TTS files are missing)
+# ===================================================================
+class SetupDialog(tk.Toplevel):
+    """Installs pip packages and GLaDOS TTS models with live progress."""
+
+    def __init__(self, parent, need_pkgs=True, need_tts=True):
+        super().__init__(parent)
+        self.success = False
+        self._need_pkgs = need_pkgs
+        self._need_tts = need_tts
+        self._installing = False
+
+        self.title("GLaDOS — Setup Required")
+        self.geometry("580x420")
+        self.configure(bg=BG)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.resizable(False, False)
+
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - 580) // 2
+        y = (self.winfo_screenheight() - 420) // 2
+        self.geometry(f"+{x}+{y}")
+
+        # ---- Title ----
+        tk.Label(self, text="Setup Required", font=("Consolas", 18, "bold"),
+                 fg=ACCENT, bg=BG).pack(pady=(20, 8))
+
+        # ---- What needs to happen ----
+        steps = []
+        if need_pkgs:
+            steps.append("Install Python packages (torch, transformers, etc.)")
+        if need_tts:
+            steps.append("Download GLaDOS TTS voice models (~120 MB)")
+        desc = "\n".join(f"  \u2022 {s}" for s in steps)
+        tk.Label(self, text=desc, font=("Consolas", 10), fg=TEXT, bg=BG,
+                 justify=tk.LEFT, anchor=tk.W).pack(fill=tk.X, padx=40, pady=(0, 14))
+
+        # ---- Install button ----
+        self.btn_install = tk.Button(
+            self, text="Install", command=self._start,
+            font=("Consolas", 12, "bold"), bg=ACCENT, fg=BG,
+            activebackground=ACCENT_HOVER, activeforeground=BG,
+            relief=tk.FLAT, padx=20, pady=6, cursor="hand2", borderwidth=0,
+        )
+        self.btn_install.pack(pady=(0, 10))
+
+        # ---- Status label ----
+        self.status_label = tk.Label(self, text="", font=("Consolas", 9),
+                                     fg=TEXT_DIM, bg=BG, anchor=tk.W)
+        self.status_label.pack(fill=tk.X, padx=40)
+
+        # ---- Log area ----
+        self.log_area = scrolledtext.ScrolledText(
+            self, height=10, bg=BG2, fg=TEXT_DIM, font=("Consolas", 8),
+            relief=tk.FLAT, borderwidth=4, state=tk.DISABLED,
+        )
+        self.log_area.pack(fill=tk.BOTH, expand=True, padx=20, pady=(6, 14))
+
+    def _start(self):
+        self.btn_install.configure(state=tk.DISABLED, text="Installing...")
+        self._installing = True
+        threading.Thread(target=self._setup_thread, daemon=True).start()
+
+    def _setup_thread(self):
+        try:
+            if self._need_pkgs:
+                self._set_status("Installing Python packages (this may take several minutes)...")
+                self._run_cmd([
+                    sys.executable, "-m", "pip", "install",
+                    "-r", str(REQUIREMENTS_FILE),
+                ])
+
+            if self._need_tts:
+                self._set_status("Downloading GLaDOS TTS models...")
+                self._run_cmd([
+                    sys.executable, str(SCRIPT_DIR / "setup_models.py"), "--skip-llm",
+                ])
+
+            self.success = True
+            self._installing = False
+            self._set_status("Setup complete! Restarting...")
+            time.sleep(1)
+            self.after(0, self.destroy)
+
+        except Exception as e:
+            self._installing = False
+            self.after(0, lambda: self._on_error(str(e)))
+
+    def _run_cmd(self, cmd):
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        for line in proc.stdout:
+            self._log(line.rstrip("\n"))
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(f"Command failed with exit code {proc.returncode}")
+
+    def _log(self, text):
+        def _do():
+            self.log_area.configure(state=tk.NORMAL)
+            self.log_area.insert(tk.END, text + "\n")
+            self.log_area.configure(state=tk.DISABLED)
+            self.log_area.see(tk.END)
+        self.after(0, _do)
+
+    def _set_status(self, text):
+        self.after(0, lambda: self.status_label.configure(text=text, fg=TEXT_DIM))
+
+    def _on_error(self, error):
+        self.btn_install.configure(state=tk.NORMAL, text="Retry")
+        self.status_label.configure(text=f"Error: {error}", fg=ERROR)
+
+    def _on_close(self):
+        if self._installing:
+            return
+        self.destroy()
 
 
 # ===================================================================
@@ -726,8 +861,19 @@ class SettingsDialog(tk.Toplevel):
         tab = self._make_tab("Model")
         tab.columnconfigure(1, weight=1)
 
-        self._label(tab, "HuggingFace Model:", 0)
-        self._entry(tab, "llm.model", 0, width=40)
+        self._label(tab, "Language Model:", 0)
+        current_model = self.settings["llm"]["model"]
+        model_options = [m["id"] for m in LLM_MODELS]
+        if current_model not in model_options:
+            model_options.append(current_model)
+        var = tk.StringVar(value=current_model)
+        self._vars["llm.model"] = var
+        om = ttk.Combobox(tab, textvariable=var, values=model_options,
+                          font=("Consolas", 10), width=35)
+        om.grid(row=0, column=1, sticky=tk.W, padx=10, pady=(8, 2))
+        tk.Label(tab, text="Changing models requires a restart to take effect.",
+                 font=("Consolas", 8), fg=TEXT_DIM, bg=BG2
+                 ).grid(row=0, column=1, sticky=tk.E, padx=10, pady=(8, 2))
 
         self._label(tab, "Temperature:", 1)
         self._slider(tab, "llm.temperature", 1, 0.0, 2.0, 0.05)
@@ -876,5 +1022,22 @@ class SettingsDialog(tk.Toplevel):
 # Entry point
 # ===================================================================
 if __name__ == "__main__":
+    need_pkgs = not _DEPS_READY
+    need_tts = not (TTS_DIR / "glados" / "models" / "glados.onnx").exists()
+
+    if need_pkgs or need_tts:
+        # Show setup dialog in a temporary root window
+        _root = tk.Tk()
+        _root.withdraw()
+        _dlg = SetupDialog(_root, need_pkgs=need_pkgs, need_tts=need_tts)
+        _root.wait_window(_dlg)
+        _root.destroy()
+        if _dlg.success:
+            # Restart so fresh imports pick up the newly installed packages
+            subprocess.Popen([sys.executable] + sys.argv)
+            sys.exit(0)
+        else:
+            sys.exit(1)
+
     app = GladosApp()
     app.mainloop()

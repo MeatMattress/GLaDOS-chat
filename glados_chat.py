@@ -4,6 +4,7 @@ Auto-listens for speech using voice activity detection.
 Run glados_gui.py for the full GUI, or this file for terminal-only mode.
 """
 
+import subprocess
 import sys
 import threading
 import time
@@ -11,9 +12,19 @@ import queue
 import json
 from pathlib import Path
 
-from glados_engine import GladosEngine, get_defaults
+SCRIPT_DIR = Path(__file__).parent.resolve()
+SETTINGS_FILE = SCRIPT_DIR / "settings.json"
+REQUIREMENTS_FILE = SCRIPT_DIR / "requirements.txt"
+TTS_DIR = SCRIPT_DIR / "GLaDOS-TTS"
 
-SETTINGS_FILE = Path(__file__).parent / "settings.json"
+# Try importing engine — may fail if deps aren't installed yet
+try:
+    from glados_engine import GladosEngine, get_defaults
+    _DEPS_READY = True
+except ImportError:
+    GladosEngine = None
+    get_defaults = None
+    _DEPS_READY = False
 
 
 def _load_settings() -> dict:
@@ -175,6 +186,30 @@ class GladosChatCLI:
         print("\n  Session ended.")
 
 
+def _ensure_deps():
+    """Install packages and TTS models if missing, then restart."""
+    need_pkgs = not _DEPS_READY
+    need_tts = not (TTS_DIR / "glados" / "models" / "glados.onnx").exists()
+    if not need_pkgs and not need_tts:
+        return
+
+    print()
+    if need_pkgs:
+        print("  Missing Python packages. Installing from requirements.txt...")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-r", str(REQUIREMENTS_FILE)]
+        )
+    if need_tts:
+        print("\n  Missing GLaDOS TTS models. Downloading...")
+        subprocess.check_call(
+            [sys.executable, str(SCRIPT_DIR / "setup_models.py"), "--skip-llm"]
+        )
+    print("\n  Setup complete. Restarting...\n")
+    subprocess.Popen([sys.executable] + sys.argv)
+    sys.exit(0)
+
+
 if __name__ == "__main__":
+    _ensure_deps()
     cli = GladosChatCLI()
     cli.run()
