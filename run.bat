@@ -17,4 +17,3 @@ if "%1"=="--cli" (
 ) else (
     python glados_gui.py
 )
-pause
